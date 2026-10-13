@@ -33,3 +33,9 @@ Rules live in `ops.dq_rule`, so a new rule is an INSERT, not a code change. NULL
 
 ## D8 – Fact grain and point-in-time join
 One fact row per disbursement. The fact links to the SCD2 version valid on `disbursement_date`, using the half-open interval `[effective_from, effective_to)`. The first version starts at `1900-01-01` so that historical txns always find a match.
+
+## D9 – `ingestion_control.reader_options` added (change after design lock)
+CSV needs `header=true`, and the office GeoJSON needs `multiLine=true`. Holding reader options per source keeps the bronze loop fully metadata-driven, with no `if source == ...` branches in code.
+
+## D10 – Config is code, seeded with MERGE
+Sources and DQ rules are defined in `01_setup` (versioned in Git) and MERGEd into `ops` tables. Re-running setup never resets watermarks. Removed rules are deactivated, not deleted, so historical `dq_result` rows stay interpretable.
