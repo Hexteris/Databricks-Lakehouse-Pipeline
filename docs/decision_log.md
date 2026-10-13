@@ -15,3 +15,21 @@
 
 ## D2 – Lesson: CSVs must be plain UTF-8
 An Excel file saved as `.csv` produced binary junk columns. Use Notepad or Python, not Excel. Watch for the BOM in data.gov.sg downloads.
+
+## D3 – Office dimension uses Social Service Offices, not FSCs
+ComCare assistance is administered through MSF's Social Service Offices (SSOs), while FSCs provide casework and counselling. The office dimension is therefore built from the data.gov.sg *Social Service Offices* GeoJSON (real public data), and transactions carry `office_code`.
+
+## D4 – Landing folders are source-first
+`raw_files/<source>/batch_date=YYYY-MM-DD/`, so each Auto Loader stream watches exactly one source folder and gets its own checkpoint and schema. The batch date is recoverable from the path.
+
+## D5 – PII: transform in storage, mask at presentation
+Raw NRIC lives only in bronze (pipeline-only access). Silver keeps `nric_hash` (salted SHA-256, used as a join key) and `nric_masked` (for display). Phone and address are AES-GCM encrypted. Name, dob and income are protected with UC column masks in gold.
+
+## D6 – Two incrementality mechanisms
+Bronze uses Auto Loader checkpoints (file-level). Silver uses a watermark on `_ingest_ts` stored in `ops.ingestion_control` (row-level). Backfill means resetting one of the two.
+
+## D7 – DQ rules are SQL expressions held as data
+Rules live in `ops.dq_rule`, so a new rule is an INSERT, not a code change. NULL counts as a failure. REJECT sends the row to quarantine, WARN keeps it and records the failure. Duplicates are handled by dedup, not by a rule. Txns for unknown beneficiaries are **not** DQ failures: they are late-arriving dimensions, handled with inferred members.
+
+## D8 – Fact grain and point-in-time join
+One fact row per disbursement. The fact links to the SCD2 version valid on `disbursement_date`, using the half-open interval `[effective_from, effective_to)`. The first version starts at `1900-01-01` so that historical txns always find a match.
