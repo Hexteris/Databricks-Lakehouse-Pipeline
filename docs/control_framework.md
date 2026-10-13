@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS msf_demo.ops.ingestion_control (
   source_name       STRING  NOT NULL,   -- beneficiary, assistance_txn, scheme, office, planning_area
   source_path       STRING  NOT NULL,   -- /Volumes/msf_demo/landing/raw_files/<source>/
   file_format       STRING  NOT NULL,   -- csv | json
+  reader_options    MAP<STRING,STRING>, -- e.g. {header: true}, {multiLine: true}
   bronze_table      STRING  NOT NULL,
   silver_table      STRING  NOT NULL,
   business_key      STRING  NOT NULL,
