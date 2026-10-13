@@ -1,0 +1,33 @@
+# ---- Data: lives in Unity Catalog Volumes, never in Git ----
+data/
+*.csv
+*.json
+*.parquet
+*.xlsx
+*.zip
+!docs/**/*.json
+
+# ---- Secrets and credentials: live in the secret scope ----
+.env
+*.env
+*.pem
+*.key
+*token*
+secrets/
+
+# ---- Databricks local / bundle artifacts ----
+.databricks/
+*.dbc
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# ---- OS / editor junk ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
