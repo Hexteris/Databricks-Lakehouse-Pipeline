@@ -1,214 +1,223 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 01_setup: platform and control framework
+# MAGIC # 01_setup
 # MAGIC
-# MAGIC Creates everything the pipeline needs before any data arrives: catalog, one schema per layer, the landing volume,
-# MAGIC the `ops` control tables, and the seed config (sources + DQ rules).
+# MAGIC This notebook builds the empty platform: one schema per medallion layer, a landing volume for raw files,
+# MAGIC and four small control tables that record what the pipeline did.
 # MAGIC
-# MAGIC **Idempotent:** every statement is `IF NOT EXISTS` or `MERGE`, so running it 10 times gives the same result as running it once.
-# MAGIC Re-running never resets watermarks or deletes run history.
+# MAGIC It is **safe to re-run**. Every statement either checks if the object already exists or merges,
+# MAGIC so running it twice gives the same result as running it once.
+# MAGIC
+# MAGIC It can also **reset** the pipeline: wipe everything built from the raw files, keep the raw files,
+# MAGIC and rebuild from scratch.
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 1. Catalog, schemas, volume
+# MAGIC ## Settings
+# MAGIC Everything is named from one catalog variable. If catalog creation is blocked, change it to `workspace`.
 
 # COMMAND ----------
 
-# MAGIC %sql
-# MAGIC CREATE CATALOG IF NOT EXISTS msf_demo COMMENT 'MSF social assistance lakehouse demo (synthetic data)';
-# MAGIC
-# MAGIC CREATE SCHEMA IF NOT EXISTS msf_demo.landing COMMENT 'Raw files as received (Volumes)';
-# MAGIC CREATE SCHEMA IF NOT EXISTS msf_demo.bronze  COMMENT 'Raw tables, all STRING, plus ingest metadata. Pipeline access only (contains raw PII)';
-# MAGIC CREATE SCHEMA IF NOT EXISTS msf_demo.silver  COMMENT 'Cleansed, deduplicated, DQ-checked, PII hashed/encrypted';
-# MAGIC CREATE SCHEMA IF NOT EXISTS msf_demo.gold    COMMENT 'Dimensional model for analytics';
-# MAGIC CREATE SCHEMA IF NOT EXISTS msf_demo.ops     COMMENT 'Control, audit, DQ and remediation tables';
-# MAGIC
-# MAGIC CREATE VOLUME IF NOT EXISTS msf_demo.landing.raw_files COMMENT 'Landing zone: <source>/batch_date=YYYY-MM-DD/<file>';
+CATALOG = "msf_demo"
+SECRET_SCOPE = "msf_demo"                                # created in the smoke test: aes_key, hash_salt
+
+LANDING = f"/Volumes/{CATALOG}/landing/raw_files"        # raw files, exactly as received
+CHECKPOINTS = f"/Volumes/{CATALOG}/ops/checkpoints"      # Auto Loader's memory of which files it has loaded
+
+# One landing folder per source. Four synthetic (generate_data.py) + one real (data.gov.sg).
+SOURCES = ["clients", "referrals", "programmes", "corrections", "population"]
+
+# A dropdown instead of a text box, so the default is always the safe choice.
+dbutils.widgets.dropdown("reset", "no", ["no", "yes"], "Reset pipeline first?")
 
 # COMMAND ----------
 
-LANDING = "/Volumes/msf_demo/landing/raw_files"
-SOURCES = ["beneficiary", "assistance_txn", "scheme", "office", "planning_area"]
+# MAGIC %md
+# MAGIC ## Optional reset
+# MAGIC Set the dropdown at the top to **yes** to drop bronze, silver, gold and ops.
+# MAGIC
+# MAGIC The checkpoints live in a volume inside `ops`, so they go too. That means the next bronze run re-reads every file.
+# MAGIC
+# MAGIC **Landing is never dropped.** The raw files are the source of truth, and every table can be rebuilt from them.
+
+# COMMAND ----------
+
+if dbutils.widgets.get("reset") == "yes":
+    for schema in ["bronze", "silver", "gold", "ops"]:
+        # CASCADE drops everything inside: tables, views, functions, volumes.
+        spark.sql(f"DROP SCHEMA IF EXISTS {CATALOG}.{schema} CASCADE")
+        print(f"dropped {CATALOG}.{schema}")
+    print("Reset done. Set the dropdown back to 'no' so the next run doesn't wipe again.")
+else:
+    print("No reset.")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Catalog, schemas, volumes
+# MAGIC One schema per layer, so you can see where any table belongs from its name alone,
+# MAGIC and permissions can be granted per layer (e.g. analysts get gold only).
+
+# COMMAND ----------
+
+existing = [r[0] for r in spark.sql("SHOW CATALOGS").collect()]
+if CATALOG not in existing:
+    try:
+        spark.sql(f"CREATE CATALOG {CATALOG}")
+    except Exception as e:
+        raise RuntimeError(f"Cannot create catalog '{CATALOG}'. Set CATALOG = 'workspace' in Settings and re-run.") from e
+
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.landing COMMENT 'Raw files as received'")
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.bronze  COMMENT 'Raw rows as tables, all STRING. Contains raw PII, pipeline only'")
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.silver  COMMENT 'Cleaned, checked, deduplicated, PII protected'")
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.gold    COMMENT 'Star schema for reporting'")
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.ops     COMMENT 'Run log, DQ rules and results, quarantine'")
+
+spark.sql(f"CREATE VOLUME IF NOT EXISTS {CATALOG}.landing.raw_files")
+spark.sql(f"CREATE VOLUME IF NOT EXISTS {CATALOG}.ops.checkpoints")
 
 for s in SOURCES:
     dbutils.fs.mkdirs(f"{LANDING}/{s}")
-dbutils.fs.mkdirs(f"{LANDING}/_checkpoints")
 
 display(dbutils.fs.ls(LANDING))
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 2. Control tables (`ops`)
-# MAGIC Design and column meanings: `docs/control_framework.md`.
+# MAGIC ## Control tables
+# MAGIC Four tables, each answering one question:
+# MAGIC
+# MAGIC | Table | Question it answers |
+# MAGIC |---|---|
+# MAGIC | `batch_run_log` | What ran, did it succeed, and how many rows went in and out? |
+# MAGIC | `dq_rule` | Which quality checks apply? (rules are data, not code) |
+# MAGIC | `dq_result` | How many rows failed each rule on each run? |
+# MAGIC | `quarantine` | Which rows were rejected, why, and have they been fixed? |
 
 # COMMAND ----------
 
-# MAGIC %sql
-# MAGIC CREATE TABLE IF NOT EXISTS msf_demo.ops.ingestion_control (
-# MAGIC   source_name       STRING  NOT NULL,
-# MAGIC   source_path       STRING  NOT NULL,
-# MAGIC   file_format       STRING  NOT NULL,
-# MAGIC   reader_options    MAP<STRING, STRING>,
-# MAGIC   bronze_table      STRING  NOT NULL,
-# MAGIC   silver_table      STRING  NOT NULL,
-# MAGIC   business_key      STRING  NOT NULL,
-# MAGIC   load_type         STRING  NOT NULL,
-# MAGIC   watermark_value   TIMESTAMP,
-# MAGIC   is_active         BOOLEAN NOT NULL,
-# MAGIC   owner             STRING,
-# MAGIC   updated_ts        TIMESTAMP
-# MAGIC ) COMMENT 'One row per source. Drives the metadata-driven bronze/silver loops';
-# MAGIC
-# MAGIC CREATE TABLE IF NOT EXISTS msf_demo.ops.batch_run_log (
-# MAGIC   run_id         STRING NOT NULL,
-# MAGIC   job_run_id     STRING,
-# MAGIC   batch_date     DATE,
-# MAGIC   layer          STRING,
-# MAGIC   table_name     STRING,
-# MAGIC   status         STRING NOT NULL,
-# MAGIC   start_ts       TIMESTAMP,
-# MAGIC   end_ts         TIMESTAMP,
-# MAGIC   rows_in        BIGINT,
-# MAGIC   rows_out       BIGINT,
-# MAGIC   rows_rejected  BIGINT,
-# MAGIC   error_msg      STRING
-# MAGIC ) COMMENT 'One row per table load. Lifecycle STARTED -> SUCCESS | FAILED';
-# MAGIC
-# MAGIC CREATE TABLE IF NOT EXISTS msf_demo.ops.file_manifest (
-# MAGIC   file_path    STRING NOT NULL,
-# MAGIC   source_name  STRING,
-# MAGIC   batch_date   DATE,
-# MAGIC   file_size    BIGINT,
-# MAGIC   file_mod_ts  TIMESTAMP,
-# MAGIC   row_count    BIGINT,
-# MAGIC   run_id       STRING,
-# MAGIC   ingest_ts    TIMESTAMP
-# MAGIC ) COMMENT 'Every file ingested into bronze, and by which run';
-# MAGIC
-# MAGIC CREATE TABLE IF NOT EXISTS msf_demo.ops.dq_rule (
-# MAGIC   rule_id      STRING  NOT NULL,
-# MAGIC   target_table STRING  NOT NULL,
-# MAGIC   column_name  STRING,
-# MAGIC   rule_expr    STRING  NOT NULL,
-# MAGIC   severity     STRING  NOT NULL,
-# MAGIC   description  STRING,
-# MAGIC   is_active    BOOLEAN NOT NULL
-# MAGIC ) COMMENT 'DQ rules as data. rule_expr is a SQL boolean: TRUE = pass, NULL = fail';
-# MAGIC
-# MAGIC CREATE TABLE IF NOT EXISTS msf_demo.ops.dq_result (
-# MAGIC   run_id        STRING,
-# MAGIC   rule_id       STRING,
-# MAGIC   target_table  STRING,
-# MAGIC   severity      STRING,
-# MAGIC   rows_checked  BIGINT,
-# MAGIC   rows_failed   BIGINT,
-# MAGIC   result_ts     TIMESTAMP
-# MAGIC ) COMMENT 'Per rule, per run: how many rows were checked and how many failed';
-# MAGIC
-# MAGIC CREATE TABLE IF NOT EXISTS msf_demo.ops.remediation_log (
-# MAGIC   remediation_id  STRING,
-# MAGIC   scenario        STRING,
-# MAGIC   target_table    STRING,
-# MAGIC   action          STRING,
-# MAGIC   rows_affected   BIGINT,
-# MAGIC   reason          STRING,
-# MAGIC   performed_by    STRING,
-# MAGIC   run_id          STRING,
-# MAGIC   performed_ts    TIMESTAMP
-# MAGIC ) COMMENT 'Audit trail of every fix: replay, rollback, inferred member, backfill';
+# One row per step per run. A row stuck in STARTED means the step crashed mid-way.
+spark.sql(f"""
+CREATE TABLE IF NOT EXISTS {CATALOG}.ops.batch_run_log (
+  run_id         STRING    COMMENT 'One id per pipeline run, shared by all its steps',
+  batch_label    STRING    COMMENT 'Which batch was processed, e.g. batch1',
+  step           STRING    COMMENT 'bronze | silver | gold | remediation',
+  table_name     STRING,
+  status         STRING    COMMENT 'STARTED | SUCCESS | FAILED',
+  started_at     TIMESTAMP,
+  ended_at       TIMESTAMP,
+  rows_in        BIGINT,
+  rows_out       BIGINT,
+  rows_rejected  BIGINT,
+  note           STRING    COMMENT 'Free text, e.g. what a remediation run fixed',
+  error_msg      STRING
+)""")
+
+# Each rule is a SQL condition that is TRUE for a good row.
+# A NULL result counts as a failure, so a missing value can never slip through.
+spark.sql(f"""
+CREATE TABLE IF NOT EXISTS {CATALOG}.ops.dq_rule (
+  rule_id      STRING,
+  table_name   STRING,
+  column_name  STRING,
+  rule_expr    STRING   COMMENT 'SQL condition, TRUE = pass',
+  severity     STRING   COMMENT 'REJECT = quarantine the row | WARN = keep the row, count the failure',
+  description  STRING,
+  is_active    BOOLEAN
+)""")
+
+# Totals per rule per run. This is what a DQ dashboard reads.
+spark.sql(f"""
+CREATE TABLE IF NOT EXISTS {CATALOG}.ops.dq_result (
+  run_id        STRING,
+  rule_id       STRING,
+  table_name    STRING,
+  rows_checked  BIGINT,
+  rows_failed   BIGINT,
+  checked_at    TIMESTAMP
+)""")
+
+# One table for all sources. The rejected row is stored whole as JSON, so the
+# table works for clients and referrals alike. Replay turns it back into columns with from_json.
+spark.sql(f"""
+CREATE TABLE IF NOT EXISTS {CATALOG}.ops.quarantine (
+  run_id           STRING         COMMENT 'Run that rejected the row',
+  table_name       STRING,
+  business_key     STRING         COMMENT 'client_id or referral_id. Empty means it cannot be fixed by key',
+  record_json      STRING         COMMENT 'The full rejected row',
+  failed_rules     ARRAY<STRING>,
+  status           STRING         COMMENT 'OPEN | RESOLVED',
+  quarantined_at   TIMESTAMP,
+  resolved_at      TIMESTAMP,
+  resolved_run_id  STRING         COMMENT 'Remediation run that fixed it'
+)""")
+
+print("Control tables ready.")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3. Seed config
-# MAGIC Config lives here as code (and therefore in Git), then gets `MERGE`d into the tables.
-# MAGIC - New source or rule: add a line and re-run.
-# MAGIC - Removed rule: deactivated (`is_active = false`), never deleted, so past `dq_result` rows still make sense.
-# MAGIC - Watermarks are **never** touched by setup.
+# MAGIC ## Data quality rules
+# MAGIC The rules are listed here, so they are versioned in Git, and then merged into `ops.dq_rule`.
+# MAGIC Adding a check means adding one line. The silver code doesn't change.
+# MAGIC
+# MAGIC Rules run **after** silver has cleaned the data (trimmed text, fixed letter case, converted dates).
+# MAGIC So a wrongly formatted date shows up here as NULL, and a messy status that cleaning fixed passes.
+# MAGIC `client_exists` and `programme_exists` are true/false columns that silver adds by looking each id up.
 
 # COMMAND ----------
 
-sources = [
-    # source_name,     file_format, reader_options,                     bronze_table,               silver_table,                business_key,     load_type
-    ("beneficiary",    "csv",  {"header": "true"},                      "bronze.brz_beneficiary",    "silver.slv_beneficiary",    "beneficiary_id", "incremental"),
-    ("assistance_txn", "json", {"multiLine": "false"},                  "bronze.brz_assistance_txn", "silver.slv_assistance_txn", "txn_id",         "incremental"),
-    ("scheme",         "csv",  {"header": "true"},                      "bronze.brz_scheme",         "silver.slv_scheme",         "scheme_code",    "incremental"),
-    ("office",         "json", {"multiLine": "true"},                   "bronze.brz_office",         "silver.slv_office",         "office_code",    "full"),
-    ("planning_area",  "csv",  {"header": "true"},                      "bronze.brz_planning_area",  "silver.slv_location",       "planning_area",  "full"),
-]
-
-rows = [(name, f"{LANDING}/{name}/", fmt, opts, brz, slv, key, load, True, "data-eng")
-        for name, fmt, opts, brz, slv, key, load in sources]
-
-spark.createDataFrame(rows, """source_name string, source_path string, file_format string,
-    reader_options map<string,string>, bronze_table string, silver_table string,
-    business_key string, load_type string, is_active boolean, owner string""").createOrReplaceTempView("seed_sources")
-
-spark.sql("""
-MERGE INTO msf_demo.ops.ingestion_control t
-USING seed_sources s ON t.source_name = s.source_name
-WHEN MATCHED THEN UPDATE SET
-  source_path = s.source_path, file_format = s.file_format, reader_options = s.reader_options,
-  bronze_table = s.bronze_table, silver_table = s.silver_table, business_key = s.business_key,
-  load_type = s.load_type, is_active = s.is_active, owner = s.owner, updated_ts = current_timestamp()
-  -- watermark_value deliberately NOT updated
-WHEN NOT MATCHED THEN INSERT
-  (source_name, source_path, file_format, reader_options, bronze_table, silver_table,
-   business_key, load_type, watermark_value, is_active, owner, updated_ts)
-  VALUES (s.source_name, s.source_path, s.file_format, s.reader_options, s.bronze_table, s.silver_table,
-   s.business_key, s.load_type, NULL, s.is_active, s.owner, current_timestamp())
-""")
-
-display(spark.table("msf_demo.ops.ingestion_control"))
-
-# COMMAND ----------
-
-B, T = "silver.slv_beneficiary", "silver.slv_assistance_txn"
+C, R = "silver.slv_clients", "silver.slv_referrals"
 rules = [
-    # rule_id,  target, column,                     rule_expr (TRUE = pass),                                                   severity, description
-    ("BEN_001", B, "nric",                     "nric IS NOT NULL",                                                        "REJECT", "NRIC is mandatory"),
-    ("BEN_002", B, "nric",                     "nric RLIKE '^[STFGM][0-9]{7}[A-Z]$'",                                     "REJECT", "NRIC format"),
-    ("BEN_003", B, "dob",                      "dob IS NOT NULL AND dob <= current_date()",                               "REJECT", "Valid date of birth"),
-    ("BEN_004", B, "postal_code",              "postal_code RLIKE '^[0-9]{6}$'",                                          "WARN",   "6-digit postal code"),
-    ("BEN_005", B, "household_size",           "household_size BETWEEN 1 AND 15",                                         "REJECT", "Plausible household size"),
-    ("BEN_006", B, "monthly_household_income", "monthly_household_income >= 0",                                           "REJECT", "Income not negative"),
-    ("TXN_001", T, "amount",                   "amount > 0",                                                              "REJECT", "Positive amount"),
-    ("TXN_002", T, "disbursement_date",        "disbursement_date IS NOT NULL AND disbursement_date <= current_date()",   "REJECT", "Valid disbursement date"),
-    ("TXN_003", T, "scheme_code",              "max_monthly_amount IS NOT NULL",                                          "REJECT", "Scheme exists (after left join to slv_scheme)"),
-    ("TXN_004", T, "amount",                   "amount <= max_monthly_amount",                                            "WARN",   "Amount within scheme cap"),
-    ("TXN_005", T, "status",                   "status IN ('DISBURSED','PENDING','REVERSED')",                            "REJECT", "Known status"),
+    # rule_id    table  column            rule_expr (TRUE = good row)                                         severity  description
+    ("CLI_001", C, "client_id",      "client_id RLIKE '^C[0-9]{4}$'",                                         "REJECT", "client_id present and well formed"),
+    ("CLI_002", C, "postal_code",    "postal_code RLIKE '^[0-9]{6}$'",                                        "REJECT", "Postal code is 6 digits"),
+    ("CLI_003", C, "household_type", "household_type IN ('Single-parent','Two-parent','Elderly-living-alone',"
+                                     "'Multigenerational','Couple-no-children')",                             "WARN",   "Known household type after cleaning"),
+    ("REF_001", R, "referral_id",    "referral_id RLIKE '^R[0-9]{5}$'",                                       "REJECT", "referral_id present and well formed"),
+    ("REF_002", R, "referral_date",  "referral_date IS NOT NULL AND referral_date <= current_date()",         "REJECT", "Date is yyyy-MM-dd and not in the future"),
+    ("REF_003", R, "client_id",      "client_exists",                                                         "REJECT", "Referred client exists as a valid client in silver"),
+    ("REF_004", R, "programme_id",   "programme_exists",                                                      "REJECT", "Programme exists"),
+    ("REF_005", R, "status",         "status IN ('Submitted','Approved','Rejected','Closed')",                 "REJECT", "Known status after cleaning"),
 ]
 
-spark.createDataFrame([r + (True,) for r in rules], """rule_id string, target_table string, column_name string,
-    rule_expr string, severity string, description string, is_active boolean""").createOrReplaceTempView("seed_rules")
+spark.createDataFrame(
+    [r + (True,) for r in rules],
+    "rule_id string, table_name string, column_name string, rule_expr string, severity string, description string, is_active boolean",
+).createOrReplaceTempView("new_rules")
 
-spark.sql("""
-MERGE INTO msf_demo.ops.dq_rule t
-USING seed_rules s ON t.rule_id = s.rule_id
+# MERGE instead of INSERT, so re-running setup updates rules rather than duplicating them.
+spark.sql(f"""
+MERGE INTO {CATALOG}.ops.dq_rule t
+USING new_rules s ON t.rule_id = s.rule_id
 WHEN MATCHED THEN UPDATE SET *
 WHEN NOT MATCHED THEN INSERT *
-WHEN NOT MATCHED BY SOURCE THEN UPDATE SET is_active = false
 """)
 
-display(spark.table("msf_demo.ops.dq_rule").orderBy("rule_id"))
+display(spark.table(f"{CATALOG}.ops.dq_rule").orderBy("rule_id"))
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 4. Checks
+# MAGIC ## Checks
 
 # COMMAND ----------
 
-# Secrets created in the smoke test must exist (values are never printed)
-keys = {s.key for s in dbutils.secrets.list("msf_demo")}
-assert {"aes_key", "hash_salt"} <= keys, f"Missing secrets, found: {keys}"
+# Secrets hold the encryption key and hashing salt. If they're missing, warn rather than fail:
+# setup doesn't need them, and silver can fall back to a demo-only key.
+try:
+    keys = {s.key for s in dbutils.secrets.list(SECRET_SCOPE)}
+    missing = {"aes_key", "hash_salt"} - keys
+    print("Secrets OK." if not missing else f"WARNING: secret scope '{SECRET_SCOPE}' is missing {missing}.")
+except Exception:
+    print(f"WARNING: secret scope '{SECRET_SCOPE}' not found. Silver will use a demo-only key.")
 
-ops_tables = {r.tableName for r in spark.sql("SHOW TABLES IN msf_demo.ops").collect()}
-expected = {"ingestion_control", "batch_run_log", "file_manifest", "dq_rule", "dq_result", "remediation_log"}
-assert expected <= ops_tables, f"Missing: {expected - ops_tables}"
+# isTemporary filter: SHOW TABLES also lists session temp views such as new_rules.
+tables = sorted(r.tableName for r in spark.sql(f"SHOW TABLES IN {CATALOG}.ops").collect() if not r.isTemporary)
+assert tables == ["batch_run_log", "dq_result", "dq_rule", "quarantine"], f"Unexpected ops tables: {tables}"
 
-print("Setup OK:", sorted(ops_tables))
-print("Sources:", spark.table("msf_demo.ops.ingestion_control").count(),
-      "| Active rules:", spark.table("msf_demo.ops.dq_rule").where("is_active").count())
+print("Setup OK.")
+print("ops tables:", tables)
+print("active rules:", spark.table(f"{CATALOG}.ops.dq_rule").where("is_active").count())
+print("landing folders:", sorted(f.name.rstrip("/") for f in dbutils.fs.ls(LANDING)))
