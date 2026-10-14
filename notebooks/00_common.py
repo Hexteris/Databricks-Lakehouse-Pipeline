@@ -36,11 +36,11 @@ def log_start(step, table_name):
         args={"run_id": RUN_ID, "batch": BATCH_LABEL, "step": step, "tbl": table_name})
 
 
-def log_end(table_name, status, rows_in=None, rows_out=None, rows_rejected=None, error_msg=None):
+def log_end(table_name, status, rows_in=None, rows_out=None, rows_rejected=None, note=None, error_msg=None):
     spark.sql(f"""
         UPDATE {CATALOG}.ops.batch_run_log
         SET status = :status, ended_at = current_timestamp(),
-            rows_in = :rows_in, rows_out = :rows_out, rows_rejected = :rows_rej, error_msg = :err
+            rows_in = :rows_in, rows_out = :rows_out, rows_rejected = :rows_rej, note = :note, error_msg = :err
         WHERE run_id = :run_id AND table_name = :tbl""",
         args={"status": status, "rows_in": rows_in, "rows_out": rows_out, "rows_rej": rows_rejected,
-              "err": error_msg, "run_id": RUN_ID, "tbl": table_name})
+              "note": note, "err": error_msg, "run_id": RUN_ID, "tbl": table_name})
