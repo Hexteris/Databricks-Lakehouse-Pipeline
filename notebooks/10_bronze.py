@@ -13,43 +13,7 @@
 
 # COMMAND ----------
 
-import uuid
-from pyspark.sql import functions as F
-
-CATALOG = "msf_demo"
-LANDING = f"/Volumes/{CATALOG}/landing/raw_files"
-CHECKPOINTS = f"/Volumes/{CATALOG}/ops/checkpoints"
-
-# Which batch you are processing. Only used for the run log, so you can read it later.
-dbutils.widgets.text("batch_label", "batch1", "Batch label")
-BATCH_LABEL = dbutils.widgets.get("batch_label")
-
-# One id for this whole run. Every row loaded today carries it, so a bad load can be found and removed.
-RUN_ID = str(uuid.uuid4())
-print("run_id:", RUN_ID)
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Run log helpers
-# MAGIC A row is written as STARTED before the load, then updated to SUCCESS or FAILED.
-# MAGIC If the notebook crashes mid-load, the row stays STARTED, so the failure is visible rather than silent.
-
-# COMMAND ----------
-
-def log_start(table_name):
-    spark.sql(f"""
-        INSERT INTO {CATALOG}.ops.batch_run_log (run_id, batch_label, step, table_name, status, started_at)
-        VALUES (:run_id, :batch, 'bronze', :tbl, 'STARTED', current_timestamp())""",
-        args={"run_id": RUN_ID, "batch": BATCH_LABEL, "tbl": table_name})
-
-
-def log_end(table_name, status, rows_out=None, error_msg=None):
-    spark.sql(f"""
-        UPDATE {CATALOG}.ops.batch_run_log
-        SET status = :status, ended_at = current_timestamp(), rows_out = :rows, error_msg = :err
-        WHERE run_id = :run_id AND table_name = :tbl""",
-        args={"status": status, "rows": rows_out, "err": error_msg, "run_id": RUN_ID, "tbl": table_name})
+# MAGIC %run ./00_common
 
 # COMMAND ----------
 
@@ -73,7 +37,7 @@ def load_to_bronze(source, table):
         print(f"{source}: no files yet, skipped")
         return
 
-    log_start(target)
+    log_start("bronze", target)
     try:
         df = (spark.readStream.format("cloudFiles")
               .option("cloudFiles.format", "csv")
