@@ -67,7 +67,7 @@ rebuild("brz_programmes", "slv_programmes", f"""
 # MAGIC | Row | Example | Kept? |
 # MAGIC |---|---|---|
 # MAGIC | National total | `Total` | no |
-# MAGIC | Planning area total | `Ang Mo Kio - Total` | **yes**, renamed to `Ang Mo Kio` |
+# MAGIC | Planning area total | `Ang Mo Kio - Total` (one is written `Changi- Total`) | **yes**, renamed to `Ang Mo Kio` |
 # MAGIC | Subzone | `Cheng San` | no, our clients only have a planning area |
 # MAGIC
 # MAGIC The name column is called `Number`, and the census uses `-` to mean zero.
@@ -94,14 +94,15 @@ rebuild("brz_population", "slv_population", f"""
         _ingest_ts
     FROM (
         SELECT
-            trim(regexp_replace(Number, ' - Total$', '')) AS planning_area,
+            -- '[ ]*-[ ]*' allows any spacing around the dash: the file has 'Changi- Total' as well as 'Ang Mo Kio - Total'
+            trim(regexp_replace(Number, '[ ]*-[ ]*Total$', '')) AS planning_area,
             {census_int("Total1_Total")}                  AS total_residents,
             {sum_65_plus}                                 AS residents_65_plus,
             _source_file,
             _ingest_ts,
             row_number() OVER (PARTITION BY trim(Number) ORDER BY _ingest_ts DESC) AS rn
         FROM {CATALOG}.bronze.brz_population
-        WHERE trim(Number) LIKE '% - Total'      -- planning-area rows only
+        WHERE trim(Number) RLIKE '-[ ]*Total$'   -- planning-area rows only (the national row is just 'Total')
     )
     WHERE rn = 1
 """)
@@ -124,10 +125,18 @@ rebuild("brz_population", "slv_population", f"""
 
 # MAGIC %sql
 # MAGIC -- Do the planning-area totals add up to the national total in the same file?
-# MAGIC SELECT
-# MAGIC   (SELECT sum(total_residents) FROM msf_demo.silver.slv_population)          AS sum_of_areas,
-# MAGIC   (SELECT CAST(Total1_Total AS INT) FROM msf_demo.bronze.brz_population
-# MAGIC    WHERE trim(Number) = 'Total' LIMIT 1)                                      AS national_total
+# MAGIC -- Census figures are rounded to the nearest 10, so each area can be off by up to 5.
+# MAGIC -- A gap bigger than 5 x (number of areas) means a planning area was dropped, not rounded.
+# MAGIC WITH t AS (
+# MAGIC   SELECT
+# MAGIC     (SELECT count(*)             FROM msf_demo.silver.slv_population) AS areas,
+# MAGIC     (SELECT sum(total_residents) FROM msf_demo.silver.slv_population) AS sum_of_areas,
+# MAGIC     (SELECT CAST(Total1_Total AS INT) FROM msf_demo.bronze.brz_population
+# MAGIC      WHERE trim(Number) = 'Total' LIMIT 1)                            AS national_total
+# MAGIC )
+# MAGIC SELECT *, national_total - sum_of_areas AS difference,
+# MAGIC        abs(national_total - sum_of_areas) <= 5 * areas AS within_rounding
+# MAGIC FROM t
 
 # COMMAND ----------
 
