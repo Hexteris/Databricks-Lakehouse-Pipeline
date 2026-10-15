@@ -42,3 +42,6 @@ Silver holds the current state only, so gold must run after each batch or interm
 - **Real census labels are inconsistent:** `Changi- Total` vs `Ang Mo Kio - Total` silently dropped one planning area. Reconciliation caught it.
 - **Census figures are rounded to 10:** reconcile within a tolerance (difference of 40 across 55 areas), not exactly.
 - **Synthetic data needs sanity checks too:** postal codes didn't match planning areas, and 119 referrals didn't fit the household. Fixed in the generator without changing any other value, then rebuilt from scratch with the reset.
+
+## D10 – One Job, setup excluded
+`msf_pipeline` runs bronze → (reference ∥ remediation → clients) → referrals → dimensions → facts → governance, with `batch_label` as a job parameter and one retry on bronze. `01_setup` is excluded because it can reset the platform. The first Job run (no new files) proved end-to-end idempotency, that MERGE works on the masked `dim_client`, and caught up a `dim_client` step skipped during manual batch 3 runs.
