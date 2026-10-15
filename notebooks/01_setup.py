@@ -147,7 +147,7 @@ CREATE TABLE IF NOT EXISTS {CATALOG}.ops.quarantine (
   business_key     STRING         COMMENT 'client_id or referral_id. Empty means it cannot be fixed by key',
   record_json      STRING         COMMENT 'The full rejected row',
   failed_rules     ARRAY<STRING>,
-  status           STRING         COMMENT 'OPEN | RESOLVED',
+  status           STRING         COMMENT 'OPEN | REPLAYED (correction applied, awaiting silver) | RESOLVED',
   quarantined_at   TIMESTAMP,
   resolved_at      TIMESTAMP,
   resolved_run_id  STRING         COMMENT 'Remediation run that fixed it'

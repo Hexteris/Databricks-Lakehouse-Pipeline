@@ -11,6 +11,7 @@
 # MAGIC | 3. Check | run every rule in `ops.dq_rule` against every row |
 # MAGIC | 4. Record | rule totals into `ops.dq_result`, rejected rows into `ops.quarantine` |
 # MAGIC | 5. Protect + merge | hash NRIC, encrypt phone and email, then MERGE the good rows into `silver.slv_clients` |
+# MAGIC | 6. Release | quarantined keys that have now loaded into silver become RESOLVED (after remediation) |
 # MAGIC
 # MAGIC Each run re-reads all of bronze. That's cheap at this size, and every step is written so a re-run changes nothing.
 
@@ -223,9 +224,24 @@ try:
         WHEN NOT MATCHED THEN INSERT *
     """).first()
 
+    # 6. Release from quarantine: a quarantined key that this run (or a later one) loaded into silver is fixed.
+    #    "Loaded after it was quarantined" matters: if a bad NEW version of an existing record is rejected,
+    #    the old silver row must not count as a fix.
+    #    This also releases rows that never had a correction, e.g. referrals that were only blocked by their client.
+    rel = spark.sql(f"""
+        MERGE INTO {CATALOG}.ops.quarantine t
+        USING (SELECT client_id AS business_key, _silver_updated_at FROM {TARGET}) s
+        ON  t.table_name = '{RULES_FOR}' AND t.business_key = s.business_key
+        AND t.status IN ('OPEN', 'REPLAYED') AND s._silver_updated_at > t.quarantined_at
+        WHEN MATCHED THEN UPDATE SET
+            status = 'RESOLVED', resolved_at = current_timestamp(),
+            resolved_run_id = coalesce(t.resolved_run_id, '{RUN_ID}')
+    """).first()
+
     valid = latest - rejected
     note = (f"latest={latest} valid={valid} inserted={m.num_inserted_rows} updated={m.num_updated_rows} "
-            f"unchanged={valid - m.num_inserted_rows - m.num_updated_rows} new_quarantine={q.num_inserted_rows}")
+            f"unchanged={valid - m.num_inserted_rows - m.num_updated_rows} new_quarantine={q.num_inserted_rows} "
+            f"released={rel.num_updated_rows}")
     log_end(TARGET, "SUCCESS", rows_in=rows_in, rows_out=valid, rows_rejected=rejected, note=note)
     print(f"{TARGET}: bronze={rows_in} | {note}")
 except Exception as e:

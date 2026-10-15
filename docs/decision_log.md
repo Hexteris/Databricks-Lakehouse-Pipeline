@@ -1,41 +1,44 @@
 # Decision Log
 
-## D1 – Smoke test results (Mon 12 Oct)
+## D1 – Smoke-test every platform feature before designing (Mon 12 Oct)
 | Feature | Result | Decision |
 |---|---|---|
-| Catalog / schema / volume | PASS | Use catalog `msf_demo`, schema per layer |
-| File into Volume (code + UI) | PASS | data.gov.sg files uploaded manually (outbound internet restricted) |
-| Auto Loader availableNow | PASS | Checkpoint gives idempotent bronze |
-| Schema evolution | PASS with `mergeSchema` on writer | Session autoMerge blocked; opt in per table. Stream fails once on new column, so Job needs a retry |
-| aes_encrypt / decrypt | PASS | AES-GCM for phone/address (non-deterministic, not joinable) |
-| Salted SHA-256 | PASS | Hashed NRIC as join key |
-| UC column mask | PASS | Role-aware masks; masked view kept as fallback only |
-| Secret scope | PASS | Key + salt in scope `msf_demo`, generated, never displayed |
-| Job + parameters | PASS | `batch_date` job parameter; failed run writes nothing |
+| Catalog / schema / volume | PASS | catalog `msf_demo`, one schema per layer |
+| File into volume (code + UI) | PASS | public files uploaded manually (outbound internet restricted) |
+| Auto Loader `availableNow` | PASS | checkpoint gives idempotent bronze |
+| Schema evolution | PASS only with `mergeSchema` on the writer | session auto-merge is blocked; opt in per table. Stream fails once on a new column, so a Job needs a retry. |
+| `aes_encrypt` / `sha2` | PASS | AES for reversible PII, salted hash for the join key |
+| UC column mask | PASS | role-aware masks; masked view only as fallback |
+| Secret scope | PASS | key and salt generated into scope `msf_demo`, never displayed |
+| Job with parameters | PASS | a failed run writes nothing |
 
-## D2 – Lesson: CSVs must be plain UTF-8
-An Excel file saved as `.csv` produced binary junk columns. Use Notepad or Python, not Excel. Watch for the BOM in data.gov.sg downloads.
+## D2 – Cut scope to what can be explained line by line
+Four synthetic sources plus one real one, explicit code per source instead of a metadata-driven framework,
+four control tables. Understanding beats breadth in a 30-minute walkthrough.
 
-## D3 – Office dimension uses Social Service Offices, not FSCs
-ComCare assistance is administered through MSF's Social Service Offices (SSOs), while FSCs provide casework and counselling. The office dimension is therefore built from the data.gov.sg *Social Service Offices* GeoJSON (real public data), and transactions carry `office_code`.
+## D3 – Keep programme names generic
+Attaching invented volumes and approval rates to real MSF schemes would misrepresent them. In production, `dim_programme` would load the real scheme catalogue.
 
-## D4 – Landing folders are source-first
-`raw_files/<source>/batch_date=YYYY-MM-DD/`, so each Auto Loader stream watches exactly one source folder and gets its own checkpoint and schema. The batch date is recoverable from the path.
+## D4 – No watermark
+The Auto Loader checkpoint tracks files. Silver re-reads bronze each run and MERGEs with `row_hash` change detection: idempotent and cheap at this size. At scale, silver would stream from bronze.
 
-## D5 – PII: transform in storage, mask at presentation
-Raw NRIC lives only in bronze (pipeline-only access). Silver keeps `nric_hash` (salted SHA-256, used as a join key) and `nric_masked` (for display). Phone and address are AES-GCM encrypted. Name, dob and income are protected with UC column masks in gold.
+## D5 – Rules are data; a NULL result is a failure
+Rules live in `ops.dq_rule` as SQL. Adding a check is an INSERT. `coalesce(rule, false)` means missing values can't slip through.
 
-## D6 – Two incrementality mechanisms
-Bronze uses Auto Loader checkpoints (file-level). Silver uses a watermark on `_ingest_ts` stored in `ops.ingestion_control` (row-level). Backfill means resetting one of the two.
+## D6 – Referential checks against silver, not bronze
+A referral only passes if its client is a valid silver client, so rejects cascade. Remediation then releases the referrals blocked by a fixed client.
 
-## D7 – DQ rules are SQL expressions held as data
-Rules live in `ops.dq_rule`, so a new rule is an INSERT, not a code change. NULL counts as a failure. REJECT sends the row to quarantine, WARN keeps it and records the failure. Duplicates are handled by dedup, not by a rule. Txns for unknown beneficiaries are **not** DQ failures: they are late-arriving dimensions, handled with inferred members.
+## D7 – Remediation goes back through bronze
+Corrections rebuild the original row with the fixed value and append it to bronze, tagged `remediation:`. Silver re-checks it with the same rules. Nothing is edited by hand, bronze stays append-only, and every table can still be rebuilt from bronze.
 
-## D8 – Fact grain and point-in-time join
-One fact row per disbursement. The fact links to the SCD2 version valid on `disbursement_date`, using the half-open interval `[effective_from, effective_to)`. The first version starts at `1900-01-01` so that historical txns always find a match.
+## D8 – Reset keeps landing
+The raw files are the source of truth. Reset drops bronze, silver, gold and ops (including checkpoints) and replays from landing.
 
-## D9 – `ingestion_control.reader_options` added (change after design lock)
-CSV needs `header=true`, and the office GeoJSON needs `multiLine=true`. Holding reader options per source keeps the bronze loop fully metadata-driven, with no `if source == ...` branches in code.
+## D9 – SCD2 needs every batch to flow to gold
+Silver holds the current state only, so gold must run after each batch or intermediate versions are lost.
 
-## D10 – Config is code, seeded with MERGE
-Sources and DQ rules are defined in `01_setup` (versioned in Git) and MERGEd into `ops` tables. Re-running setup never resets watermarks. Removed rules are deactivated, not deleted, so historical `dq_result` rows stay interpretable.
+## Lessons from the data
+- **Excel-saved CSVs break ingestion** (binary content, BOM). Use plain UTF-8.
+- **Real census labels are inconsistent:** `Changi- Total` vs `Ang Mo Kio - Total` silently dropped one planning area. Reconciliation caught it.
+- **Census figures are rounded to 10:** reconcile within a tolerance (difference of 40 across 55 areas), not exactly.
+- **Synthetic data needs sanity checks too:** postal codes didn't match planning areas, and 119 referrals didn't fit the household. Fixed in the generator without changing any other value, then rebuilt from scratch with the reset.
