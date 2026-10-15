@@ -44,6 +44,16 @@ HOUSEHOLDS = [
     "Multigenerational", "Couple-no-children",
 ]
 STATUSES = ["Submitted", "Approved", "Rejected", "Closed"]
+
+# First two digits of a Singapore postal code identify the postal sector.
+# One typical HDB sector per planning area (illustrative), so a client's postal code matches where they live.
+POSTAL_SECTOR = {
+    "Ang Mo Kio": "56", "Bedok": "46", "Bishan": "57", "Bukit Batok": "65", "Bukit Merah": "15",
+    "Bukit Panjang": "67", "Choa Chu Kang": "68", "Clementi": "12", "Geylang": "38", "Hougang": "53",
+    "Jurong East": "60", "Jurong West": "64", "Kallang": "33", "Pasir Ris": "51", "Punggol": "82",
+    "Queenstown": "14", "Sembawang": "75", "Sengkang": "54", "Serangoon": "55", "Tampines": "52",
+    "Toa Payoh": "31", "Woodlands": "73", "Yishun": "76",
+}
 PROGRAMMES = [
     ("P01", "Emergency Financial Aid", "Social Support Unit"),
     ("P02", "Food Assistance", "Social Support Unit"),
@@ -58,6 +68,17 @@ PROGRAMMES = [
     ("P11", "Disability Support Referral", "Community Care Unit"),
     ("P12", "Job Placement Help", "Social Support Unit"),
 ]
+
+# Which households each programme makes sense for. Programmes not listed suit everyone.
+WITH_CHILDREN = {"Single-parent", "Two-parent", "Multigenerational"}
+PROGRAMME_FIT = {
+    "P04": WITH_CHILDREN,                                   # Parenting Workshops
+    "P06": WITH_CHILDREN,                                   # Childcare Subsidy Help
+    "P07": WITH_CHILDREN,                                   # Youth Mentoring
+    "P08": WITH_CHILDREN,                                   # After-School Care
+    "P09": {"Elderly-living-alone", "Multigenerational"},   # Eldercare Befriending
+    "P10": set(HOUSEHOLDS) - {"Elderly-living-alone"},      # Caregiver Respite (needs a caregiver)
+}
 
 CLIENT_COLS = ["client_id", "full_name", "nric_fake", "phone", "email",
                "planning_area", "household_type", "postal_code", "updated_date"]
@@ -85,18 +106,39 @@ def rand_date(start, end):
     return start + timedelta(days=rng.randint(0, (end - start).days))
 
 
+def postal_for(area, digits):
+    # Sector from the planning area, last four digits from the random number.
+    return POSTAL_SECTOR[area] + f"{digits % 10000:04d}"
+
+
 def make_client(n, updated):
+    nric = f"FAKE-{rng.randint(1000000, 9999999)}"
+    phone = f"0000{rng.randint(1000, 9999)}"
+    area = rng.choice(AREAS)
+    household = rng.choice(HOUSEHOLDS)
+    # Same random call as before (same range), so every other random value in the files stays identical.
+    digits = rng.randint(100000, 899999)
     return {
         "client_id": f"C{n:04d}",
         "full_name": f"Test Client {n:04d}",
-        "nric_fake": f"FAKE-{rng.randint(1000000, 9999999)}",
-        "phone": f"0000{rng.randint(1000, 9999)}",
+        "nric_fake": nric,
+        "phone": phone,
         "email": f"client{n:04d}@example.com",
-        "planning_area": rng.choice(AREAS),
-        "household_type": rng.choice(HOUSEHOLDS),
-        "postal_code": f"{rng.randint(100000, 899999)}",
+        "planning_area": area,
+        "household_type": household,
+        "postal_code": postal_for(area, digits),
         "updated_date": updated,
     }
+
+
+def fit_programme(referral, household):
+    """If the programme doesn't suit the client's household, swap it for one that does.
+    Deterministic (no random call), so the rest of the data doesn't shift."""
+    allowed = PROGRAMME_FIT.get(referral["programme_id"])
+    if household is None or allowed is None or household in allowed:
+        return
+    options = [p for p, _, _ in PROGRAMMES if household in PROGRAMME_FIT.get(p, set(HOUSEHOLDS))]
+    referral["programme_id"] = options[int(referral["referral_id"][1:]) % len(options)]
 
 
 def make_referral(n, client_ids, d_start, d_end):
@@ -137,10 +179,11 @@ manifest.append("batch1 clients: row 10 (was C0010) has an empty client_id "
                 "-> quarantine, NOT correctable by key")
 # defect: invalid postal codes
 clients1[24]["postal_code"] = "12345"
-corrections.append(("clients", clients1[24]["client_id"], "postal_code", "238801"))
+# The correction restores the value the source should have sent
+corrections.append(("clients", clients1[24]["client_id"], "postal_code", base[24]["postal_code"]))
 manifest.append(f"batch1 clients: {clients1[24]['client_id']} postal_code '12345' (5 digits)")
 clients1[59]["postal_code"] = "ABC123"
-corrections.append(("clients", clients1[59]["client_id"], "postal_code", "560100"))
+corrections.append(("clients", clients1[59]["client_id"], "postal_code", base[59]["postal_code"]))
 manifest.append(f"batch1 clients: {clients1[59]['client_id']} postal_code 'ABC123'")
 # cleanable mess: whitespace and case (silver standardises these, no quarantine)
 for i in (4, 14, 30):
@@ -154,6 +197,9 @@ write_csv("clients", "clients_batch1.csv", CLIENT_COLS, clients1)
 referrals1 = [make_referral(n, valid_ids, date(2026, 1, 2), date(2026, 6, 30))
               for n in range(1, 401)]
 referrals1[50]["client_id"] = demo_id   # guarantees an OLD referral for demo client
+household_of = {c["client_id"]: c["household_type"] for c in base}
+for r in referrals1:
+    fit_programme(r, household_of[r["client_id"]])
 refs_clean = [dict(r) for r in referrals1]   # clean copy for re-sent duplicates
 
 manifest.append(f"DEMO CLIENT: {demo_id} has a batch 1 referral "
@@ -189,9 +235,11 @@ for i in changed_idx:
     c = dict(base[i])
     old_area = c["planning_area"]
     c["planning_area"] = rng.choice([a for a in AREAS if a != old_area])
+    # A move changes the postal code too: new area's sector, same last four digits (no extra random call).
+    c["postal_code"] = POSTAL_SECTOR[c["planning_area"]] + c["postal_code"][2:]
     c["updated_date"] = "2026-07-01"
     clients2.append(c)
-manifest.append("batch2 clients: 30 clients moved planning_area (SCD2 new version)")
+manifest.append("batch2 clients: 30 clients moved planning_area and postal_code (SCD2 new version)")
 
 for i in phone_idx:
     c = dict(base[i])
@@ -207,6 +255,7 @@ manifest.append(f"batch2 clients: {', '.join(base[i]['client_id'] for i in uncha
                 "re-sent UNCHANGED (SCD2 must not create a new version)")
 
 new_clients = [make_client(i, "2026-07-01") for i in range(201, 211)]
+household_of.update({c["client_id"]: c["household_type"] for c in new_clients})   # before the typo below
 # defect: a value cleaning cannot fix (space instead of hyphen). WARN rule: row is kept, failure is counted.
 new_clients[0]["household_type"] = "Single parent"
 manifest.append(f"batch2 clients: {new_clients[0]['client_id']} household_type 'Single parent' "
@@ -226,6 +275,10 @@ referrals2[40]["client_id"] = "C9001"
 corrections.append(("referrals", referrals2[40]["referral_id"], "client_id", "C0050"))
 referrals2[41]["client_id"] = "C9002"
 corrections.append(("referrals", referrals2[41]["referral_id"], "client_id", "C0051"))
+# Orphans: fit the programme to the client the correction file will assign them to
+true_client = {referrals2[40]["referral_id"]: "C0050", referrals2[41]["referral_id"]: "C0051"}
+for r in referrals2:
+    fit_programme(r, household_of.get(true_client.get(r["referral_id"], r["client_id"])))
 manifest.append(f"batch2 referrals: {referrals2[40]['referral_id']} and "
                 f"{referrals2[41]['referral_id']} are orphans (client C9001/C9002 not in clients)")
 
