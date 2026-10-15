@@ -37,6 +37,7 @@ ops      batch_run_log · dq_rule · dq_result · quarantine
 | `22_silver_referrals` | silver | Same pattern + checks against silver clients and programmes |
 | `30_gold_dimensions` | gold | `dim_date`, `dim_programme` / `dim_location` (SCD1), `dim_client` (SCD2) |
 | `31_gold_facts` | gold | `fact_referral` (point-in-time join), `obt_referral_wide`, star vs wide comparison |
+| `50_governance` | gold | Unity Catalog column masks on `dim_client` (run last, after every rebuild) |
 
 ## How to run
 
@@ -46,6 +47,7 @@ ops      batch_run_log · dq_rule · dq_result · quarantine
    - **batch1**: `programmes.csv`, `clients_batch1.csv`, `referrals_batch1.csv`, plus the census CSV in `population/`
    - **batch2**: `clients_batch2.csv`, `referrals_batch2.csv`
    - **batch3**: `corrections_batch3.csv`, then `10` → `40` → `21` → `22` → `30` → `31`
-4. To rebuild from scratch: `01_setup` with reset = `yes` (drops bronze/silver/gold/ops and checkpoints, keeps landing).
+4. Run `50_governance` once at the end.
+5. To rebuild from scratch: `01_setup` with reset = `yes` (drops bronze/silver/gold/ops and checkpoints, keeps landing).
 
 Design details: [docs/design.md](docs/design.md). Decisions and lessons learned: [docs/decision_log.md](docs/decision_log.md).
