@@ -10,6 +10,8 @@
 # MAGIC Because "client exists" means "exists as a **valid** silver client", a referral for a quarantined client is
 # MAGIC quarantined too. When the client is fixed, the referral can be released.
 # MAGIC
+# MAGIC After remediation, any quarantined referral that now loads into silver is marked RESOLVED.
+# MAGIC
 # MAGIC Referrals hold no direct PII (only ids), so there's no hashing or encryption in this step.
 
 # COMMAND ----------
@@ -179,9 +181,24 @@ try:
         WHEN NOT MATCHED THEN INSERT *
     """).first()
 
+    # 6. Release from quarantine: a quarantined key that this run (or a later one) loaded into silver is fixed.
+    #    "Loaded after it was quarantined" matters: if a bad NEW version of an existing record is rejected,
+    #    the old silver row must not count as a fix.
+    #    This also releases rows that never had a correction, e.g. referrals that were only blocked by their client.
+    rel = spark.sql(f"""
+        MERGE INTO {CATALOG}.ops.quarantine t
+        USING (SELECT referral_id AS business_key, _silver_updated_at FROM {TARGET}) s
+        ON  t.table_name = '{RULES_FOR}' AND t.business_key = s.business_key
+        AND t.status IN ('OPEN', 'REPLAYED') AND s._silver_updated_at > t.quarantined_at
+        WHEN MATCHED THEN UPDATE SET
+            status = 'RESOLVED', resolved_at = current_timestamp(),
+            resolved_run_id = coalesce(t.resolved_run_id, '{RUN_ID}')
+    """).first()
+
     valid = latest - rejected
     note = (f"latest={latest} valid={valid} inserted={m.num_inserted_rows} updated={m.num_updated_rows} "
-            f"unchanged={valid - m.num_inserted_rows - m.num_updated_rows} new_quarantine={q.num_inserted_rows}")
+            f"unchanged={valid - m.num_inserted_rows - m.num_updated_rows} new_quarantine={q.num_inserted_rows} "
+            f"released={rel.num_updated_rows}")
     log_end(TARGET, "SUCCESS", rows_in=rows_in, rows_out=valid, rows_rejected=rejected, note=note)
     print(f"{TARGET}: bronze={rows_in} | {note}")
 except Exception as e:
@@ -223,11 +240,13 @@ except Exception as e:
 # COMMAND ----------
 
 # MAGIC %sql
-# MAGIC -- Reconciliation: every distinct bronze referral is either in silver or in quarantine (before any remediation).
+# MAGIC -- Reconciliation: every distinct bronze referral is either in silver or still in quarantine.
 # MAGIC -- Rows with no id are counted one by one, because each one is quarantined separately.
+# MAGIC -- RESOLVED rows are excluded: they are now in silver.
 # MAGIC SELECT
 # MAGIC   (SELECT count(*) FROM msf_demo.silver.slv_referrals)                                       AS in_silver,
-# MAGIC   (SELECT count(*) FROM msf_demo.ops.quarantine WHERE table_name = 'silver.slv_referrals')   AS in_quarantine,
+# MAGIC   (SELECT count(*) FROM msf_demo.ops.quarantine
+# MAGIC     WHERE table_name = 'silver.slv_referrals' AND status <> 'RESOLVED')                      AS in_quarantine,
 # MAGIC   (SELECT count(DISTINCT nullif(trim(referral_id), '')) + count_if(nullif(trim(referral_id), '') IS NULL)
 # MAGIC      FROM msf_demo.bronze.brz_referrals)                                                     AS distinct_in_bronze
 
