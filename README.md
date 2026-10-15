@@ -28,6 +28,7 @@ ops      batch_run_log · dq_rule · dq_result · quarantine
 
 | Notebook | Layer | What it does |
 |---|---|---|
+| `00_overview` | intro | Architecture, concept map, lake vs warehouse vs lakehouse vs mesh. Open this first in the demo. |
 | `01_setup` | setup | Schemas, volumes, control tables, DQ rules. Optional reset that keeps the raw files. |
 | `00_common` | shared | Settings, `RUN_ID`, run-log helpers (`%run` by every notebook below) |
 | `10_bronze` | bronze | Auto Loader per source, lineage columns |
