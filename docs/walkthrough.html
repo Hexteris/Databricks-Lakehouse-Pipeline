@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MSF Lakehouse Demo: visual walkthrough</title>
+<style>
+  :root {
+    --bg: #0f1419; --panel: #172029; --text: #e6edf3; --muted: #8b98a5; --line: #2b3a48;
+    --landing: #7d8b99; --bronze: #cd7f32; --silver: #b8c4cf; --gold: #e3b341;
+    --ops: #5b8def; --quar: #f0604d; --ok: #3fb950; --warn: #d29922;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 24px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  header .tag { font-size: 12px; color: var(--muted); }
+  .progress { flex: 1; display: flex; gap: 4px; }
+  .progress span { flex: 1; height: 6px; border-radius: 3px; background: var(--line); cursor: pointer; transition: background .3s; }
+  .progress span.done { background: #3d5a73; }
+  .progress span.now { background: var(--gold); }
+  main { display: grid; grid-template-columns: 1fr; gap: 16px; padding: 16px 24px 90px; max-width: 1200px; margin: 0 auto; }
+  .stage { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px; }
+  svg { width: 100%; height: auto; display: block; }
+  .node rect { fill: #1d2833; stroke: var(--line); stroke-width: 2; transition: all .4s; }
+  .node text { fill: var(--muted); font-size: 15px; font-weight: 600; text-anchor: middle; transition: fill .4s; }
+  .node .count { font-size: 12px; font-weight: 500; }
+  .node.active rect { stroke-width: 3; filter: drop-shadow(0 0 8px rgba(255,255,255,.15)); }
+  .node.active text { fill: var(--text); }
+  .flow-base { fill: none; stroke: var(--line); stroke-width: 2; }
+  .flow-on { fill: none; stroke-width: 3; stroke-dasharray: 6 6; animation: dash 1s linear infinite; }
+  @keyframes dash { to { stroke-dashoffset: -12; } }
+  .flow-label { font-size: 12px; fill: var(--text); text-anchor: middle; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 22px; }
+  .card h2 { margin: 0 0 4px; font-size: 22px; }
+  .card .layer { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  .body { margin-top: 10px; }
+  .body p { margin: 8px 0; }
+  .say { margin-top: 14px; padding: 12px 16px; border-left: 4px solid var(--gold); background: #1f2a1f00; background: rgba(227,179,65,.08); border-radius: 0 8px 8px 0; font-style: italic; }
+  .say b { font-style: normal; color: var(--gold); }
+  table { border-collapse: collapse; margin: 10px 0; width: 100%; font-size: 14px; }
+  th, td { border-bottom: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  td code, p code, li code { background: #0b1016; padding: 1px 6px; border-radius: 4px; font-size: 13px; }
+  .row-in { animation: rowin .5s ease both; }
+  @keyframes rowin { from { opacity: 0; transform: translateX(-12px); } to { opacity: 1; transform: none; } }
+  .bad { color: var(--quar); font-weight: 600; }
+  .good { color: var(--ok); font-weight: 600; }
+  .warnc { color: var(--warn); font-weight: 600; }
+  .closed { color: var(--muted); text-decoration: line-through; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+  .p-open { background: rgba(240,96,77,.18); color: var(--quar); }
+  .p-rep { background: rgba(210,153,34,.18); color: var(--warn); }
+  .p-res { background: rgba(63,185,80,.18); color: var(--ok); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .box { border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; }
+  .box h4 { margin: 0 0 6px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .arrow { color: var(--muted); padding: 0 6px; }
+  nav { position: fixed; bottom: 0; left: 0; right: 0; display: flex; justify-content: center; gap: 12px; padding: 14px; background: rgba(15,20,25,.95); border-top: 1px solid var(--line); }
+  button { background: #22303d; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 9px 22px; font-size: 15px; cursor: pointer; }
+  button:hover:not(:disabled) { background: #2c3e4f; }
+  button:disabled { opacity: .35; cursor: default; }
+  button.primary { background: #8a6d1d; border-color: var(--gold); }
+  .counter { align-self: center; color: var(--muted); min-width: 70px; text-align: center; }
+  ul { margin: 6px 0; padding-left: 20px; }
+  @media (max-width: 800px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <div><h1>MSF Lakehouse Demo</h1><div class="tag">Visual walkthrough · left / right arrow keys</div></div>
+  <div class="progress" id="progress"></div>
+</header>
+
+<main>
+  <div class="stage">
+    <svg viewBox="0 0 860 300" id="diagram" aria-label="Pipeline diagram">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#3d4f60"/>
+        </marker>
+      </defs>
+      <g id="flows"></g>
+      <g id="nodes"></g>
+      <g id="packets"></g>
+      <g id="labels"></g>
+    </svg>
+  </div>
+  <div class="card" id="card"></div>
+</main>
+
+<nav>
+  <button id="prev">Back</button>
+  <span class="counter" id="counter"></span>
+  <button id="next" class="primary">Next</button>
+</nav>
+
+<script>
+// ---------- diagram geometry ----------
+const NODES = {
+  landing:    { x: 20,  y: 55,  w: 150, h: 70, label: "Landing",    color: "--landing" },
+  bronze:     { x: 235, y: 55,  w: 150, h: 70, label: "Bronze",     color: "--bronze" },
+  silver:     { x: 450, y: 55,  w: 150, h: 70, label: "Silver",     color: "--silver" },
+  gold:       { x: 665, y: 55,  w: 170, h: 70, label: "Gold",       color: "--gold" },
+  ops:        { x: 235, y: 205, w: 150, h: 70, label: "Ops (rules, log)", color: "--ops" },
+  quarantine: { x: 450, y: 205, w: 150, h: 70, label: "Quarantine", color: "--quar" },
+};
+// flow id -> SVG path + label position
+const FLOWS = {
+  lb: { d: "M170,90 L235,90",              lx: 202, ly: 80 },
+  bs: { d: "M385,90 L450,90",              lx: 417, ly: 80 },
+  sg: { d: "M600,90 L665,90",              lx: 632, ly: 80 },
+  sq: { d: "M525,125 L525,205",            lx: 560, ly: 170 },
+  qb: { d: "M450,250 C400,250 330,170 310,125", lx: 395, ly: 190 },
+  os: { d: "M385,240 C420,240 470,160 490,125", lx: 455, ly: 222 },
+};
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const NS = "http://www.w3.org/2000/svg";
+const el = (tag, attrs = {}, parent) => {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (parent) parent.appendChild(e);
+  return e;
+};
+
+function drawBase() {
+  const flows = document.getElementById("flows"), nodes = document.getElementById("nodes");
+  for (const [id, f] of Object.entries(FLOWS))
+    el("path", { d: f.d, class: "flow-base", id: "base-" + id, "marker-end": "url(#arrow)" }, flows);
+  for (const [id, n] of Object.entries(NODES)) {
+    const g = el("g", { class: "node", id: "node-" + id }, nodes);
+    el("rect", { x: n.x, y: n.y, width: n.w, height: n.h, rx: 10 }, g);
+    const t = el("text", { x: n.x + n.w / 2, y: n.y + 30 }, g); t.textContent = n.label;
+    const c = el("text", { x: n.x + n.w / 2, y: n.y + 52, class: "count", id: "count-" + id }, g);
+  }
+}
+
+// ---------- steps ----------
+const S = (cls, txt) => `<span class="${cls}">${txt}</span>`;
+const STEPS = [
+{
+  layer: "Introduction", title: "The question this demo answers",
+  active: [], flows: [], counts: {},
+  body: `<p>How do you ingest data about vulnerable clients so that it can be <b>trusted</b>, personal data is <b>protected</b>,
+  history stays <b>correct</b>, and mistakes can be <b>fixed</b>?</p>
+  <p>One pipeline, run across three batches that arrive over time:</p>
+  <table><tr><th>Batch</th><th>What arrives</th><th>What it tests</th></tr>
+  <tr class="row-in"><td>1</td><td>200 clients, 400 referrals, 12 programmes, real census data</td><td>Build a clean baseline, catch bad rows</td></tr>
+  <tr class="row-in" style="animation-delay:.15s"><td>2</td><td>47 changed / new clients, 304 referrals</td><td>Apply changes correctly: history, duplicates, orphans</td></tr>
+  <tr class="row-in" style="animation-delay:.3s"><td>3</td><td>8 corrections from the source</td><td>Fix quarantined rows without editing anything by hand</td></tr></table>
+  <p>Two clients to follow through the whole story: <b>C0130</b> (moves house) and <b>C0025</b> (arrives broken, gets fixed).</p>`,
+  say: "Batch 1 shows the pipeline can build the data. Batch 2 shows it keeps it correct as reality changes. Batch 3 shows mistakes can be fixed safely.",
+},
+{
+  layer: "Architecture", title: "Medallion: one layer, one job",
+  active: ["landing","bronze","silver","gold","ops","quarantine"], flows: ["lb","bs","sg","sq","os"], counts: {},
+  body: `<table><tr><th>Layer</th><th>Job</th><th>Rule</th></tr>
+  <tr class="row-in"><td>Landing</td><td>Raw files exactly as received</td><td>Never changed: the source of truth</td></tr>
+  <tr class="row-in" style="animation-delay:.1s"><td>Bronze</td><td>Every file as a table, all text, plus lineage</td><td>Append-only, raw PII, pipeline access only</td></tr>
+  <tr class="row-in" style="animation-delay:.2s"><td>Silver</td><td>Cleaned, checked, one row per client / referral</td><td>PII hashed or encrypted</td></tr>
+  <tr class="row-in" style="animation-delay:.3s"><td>Gold</td><td>Star schema for questions</td><td>SCD2 history, column masks</td></tr>
+  <tr class="row-in" style="animation-delay:.4s"><td>Ops</td><td>Run log, DQ rules, DQ results, quarantine</td><td>Everything the pipeline did is recorded</td></tr></table>`,
+  say: "Each layer has one job, so a bug in one is fixed without touching the others, and every table can be rebuilt from the raw files.",
+},
+{
+  layer: "Setup · 01_setup", title: "Control tables: rules are data",
+  active: ["ops"], flows: ["os"], counts: { ops: "8 rules" },
+  body: `<p>Data quality rules live in <code>ops.dq_rule</code> as SQL conditions, not in code. TRUE = pass, <b>NULL = fail</b>.</p>
+  <table><tr><th>Rule</th><th>Check</th><th>Severity</th></tr>
+  <tr class="row-in"><td>CLI_001</td><td><code>client_id</code> is C + 4 digits</td><td class="bad">REJECT</td></tr>
+  <tr class="row-in" style="animation-delay:.08s"><td>CLI_002</td><td>postal code is 6 digits</td><td class="bad">REJECT</td></tr>
+  <tr class="row-in" style="animation-delay:.16s"><td>CLI_003</td><td>known household type</td><td class="warnc">WARN</td></tr>
+  <tr class="row-in" style="animation-delay:.24s"><td>REF_001</td><td><code>referral_id</code> is R + 5 digits</td><td class="bad">REJECT</td></tr>
+  <tr class="row-in" style="animation-delay:.32s"><td>REF_002</td><td>date is yyyy-MM-dd, not in the future</td><td class="bad">REJECT</td></tr>
+  <tr class="row-in" style="animation-delay:.40s"><td>REF_003</td><td>client exists <b>as a valid silver client</b></td><td class="bad">REJECT</td></tr>
+  <tr class="row-in" style="animation-delay:.48s"><td>REF_004 / 005</td><td>programme exists / known status</td><td class="bad">REJECT</td></tr></table>`,
+  say: "Adding a check is one line of config. The silver code doesn't change. And a NULL result counts as a failure, so missing values can't slip through.",
+},
+{
+  layer: "Batch 1 · landing", title: "Files arrive",
+  active: ["landing"], flows: [], counts: { landing: "4 files" },
+  body: `<table><tr><th>Folder</th><th>File</th><th>Rows</th><th>Origin</th></tr>
+  <tr class="row-in"><td>programmes</td><td>programmes.csv</td><td>12</td><td>synthetic</td></tr>
+  <tr class="row-in" style="animation-delay:.1s"><td>clients</td><td>clients_batch1.csv</td><td>200</td><td>synthetic</td></tr>
+  <tr class="row-in" style="animation-delay:.2s"><td>referrals</td><td>referrals_batch1.csv</td><td>400</td><td>synthetic</td></tr>
+  <tr class="row-in" style="animation-delay:.3s"><td>population</td><td>Census 2020 by planning area</td><td>388</td><td><b>real</b>, data.gov.sg</td></tr></table>
+  <p>Batch 1 already contains planted problems: an empty <code>client_id</code>, <b>C0025</b> with postal code <code class="bad">12345</code>,
+  C0060 with <code class="bad">ABC123</code>, three bad dates, and messy text like <code>"  TWO-PARENT "</code>.</p>`,
+  say: "Files land unchanged in a governed volume, one folder per source. In production a source system or API pull drops them into the same folders.",
+},
+{
+  layer: "Batch 1 · 10_bronze", title: "Bronze: load each file exactly once",
+  active: ["landing","bronze"], flows: ["lb"], counts: { landing: "4 files", bronze: "clients 200 · referrals 400" },
+  body: `<div class="grid2"><div class="box"><h4>Every row gets</h4>
+  <ul><li><code>_source_file</code>: which file</li><li><code>_ingest_ts</code>: when</li><li><code>_run_id</code>: which run</li></ul>
+  All columns stay <b>text</b>. Nothing is guessed or lost (e.g. leading zeros in <code>00002124</code>).</div>
+  <div class="box"><h4>Auto Loader checkpoint</h4>
+  Records every file loaded. Run again → <span class="good">0 new rows</span>.<br>New file → only that file is loaded.</div></div>`,
+  say: "Bronze is a faithful, append-only copy. The checkpoint makes re-runs safe, and the run id lets me remove one bad load surgically.",
+},
+{
+  layer: "Batch 1 · 20_silver_reference", title: "Real data is messy: the census",
+  active: ["bronze","silver"], flows: ["bs"], counts: { bronze: "population 388", silver: "55 areas" },
+  body: `<p>The census file is a report, not a table: national, planning-area and subzone rows mixed together, with <code>-</code> for zero.</p>
+  <table><tr><th>Row</th><th>Example</th><th>Kept?</th></tr>
+  <tr class="row-in"><td>National total</td><td><code>Total</code></td><td>no</td></tr>
+  <tr class="row-in" style="animation-delay:.1s"><td>Planning area</td><td><code>Ang Mo Kio - Total</code></td><td class="good">yes</td></tr>
+  <tr class="row-in" style="animation-delay:.2s"><td>Planning area, odd label</td><td><code>Changi- Total</code> (no space)</td><td>first run: <span class="bad">silently dropped</span> → fixed</td></tr>
+  <tr class="row-in" style="animation-delay:.3s"><td>Subzone</td><td><code>Cheng San</code></td><td>no</td></tr></table>
+  <p>Reconciliation: sum of areas vs national total. Gap of <b>1,810</b> → Changi missing. After the fix: gap of <b>40</b> → census rounding to 10 across 55 areas.</p>`,
+  say: "My reconciliation check caught a planning area that was silently dropped because of a label format. Synthetic data would never have shown me that.",
+},
+{
+  layer: "Batch 1 · 21_silver_clients", title: "Silver clients: clean → dedup → check → protect",
+  active: ["bronze","silver","quarantine","ops"], flows: ["bs","sq","os"], counts: { bronze: "200", silver: "197 clients", quarantine: "3 OPEN" },
+  body: `<table><tr><th>Row</th><th>What happens</th><th>Result</th></tr>
+  <tr class="row-in"><td><code>"  TWO-PARENT "</code></td><td>trim + fix case → <code>Two-parent</code></td><td class="good">cleaned, passes</td></tr>
+  <tr class="row-in" style="animation-delay:.12s"><td>empty client_id</td><td>CLI_001 fails</td><td class="bad">quarantine</td></tr>
+  <tr class="row-in" style="animation-delay:.24s"><td><b>C0025</b>, postal <code>12345</code></td><td>CLI_002 fails, can't be fixed by formatting</td><td class="bad">quarantine</td></tr>
+  <tr class="row-in" style="animation-delay:.36s"><td>C0060, postal <code>ABC123</code></td><td>CLI_002 fails</td><td class="bad">quarantine</td></tr></table>
+  <div class="box"><h4>PII on the way into silver: C0130</h4>
+  <table><tr><th>Column</th><th>Bronze</th><th></th><th>Silver</th></tr>
+  <tr><td>NRIC</td><td><code>FAKE-4761823</code></td><td class="arrow">→</td><td><code>nric_hash</code> (salted SHA-256, 64 hex chars) + <code>FAKE-***1823</code></td></tr>
+  <tr><td>phone</td><td><code>00002124</code></td><td class="arrow">→</td><td><code>phone_enc</code> (AES, base64), readable only with the key</td></tr></table></div>`,
+  say: "Clean first so the rules only catch real problems. Rejected rows keep their original values for repair. The NRIC is hashed for matching; phone and email are encrypted for staff who need them back.",
+},
+{
+  layer: "Batch 1 · 22_silver_referrals", title: "Cascade: a referral needs a valid client",
+  active: ["bronze","silver","quarantine"], flows: ["bs","sq"], counts: { bronze: "400", silver: "392 referrals", quarantine: "11 OPEN" },
+  body: `<table><tr><th>Referral</th><th>Problem</th><th>Type</th></tr>
+  <tr class="row-in"><td>empty id</td><td>REF_001</td><td>planted</td></tr>
+  <tr class="row-in" style="animation-delay:.08s"><td>R00020, R00089, R00151</td><td>REF_002: <code>15/03/2026</code>, <code>March 5, 2026</code>, a 2027 date</td><td>planted</td></tr>
+  <tr class="row-in" style="animation-delay:.16s"><td><b>R00087</b>, R00273</td><td>REF_003: client <b>C0025</b> is in quarantine</td><td class="warnc">cascade</td></tr>
+  <tr class="row-in" style="animation-delay:.24s"><td>R00387</td><td>REF_003: client C0060 is in quarantine</td><td class="warnc">cascade</td></tr>
+  <tr class="row-in" style="animation-delay:.32s"><td>R00335</td><td>REF_003: client C0010 arrived with an empty id</td><td class="warnc">cascade</td></tr></table>
+  <p>Reconciliation: <b>392</b> in silver + <b>8</b> in quarantine = <b>400</b> in bronze.</p>`,
+  say: "Referential checks run against silver, not bronze. A referral only counts if its client is valid, so fixing the client will release it later.",
+},
+{
+  layer: "Batch 1 · 30 / 31 gold", title: "Gold: a star schema",
+  active: ["silver","gold"], flows: ["sg"], counts: { silver: "197 · 392", gold: "dim_client 197 · fact 392" },
+  body: `<div class="grid2"><div class="box"><h4>Dimensions</h4>
+  <ul><li><code>dim_date</code>: every day 2020–2030</li><li><code>dim_programme</code>: SCD1</li>
+  <li><code>dim_location</code>: SCD1, real census figures</li><li><code>dim_client</code>: <b>SCD2</b></li></ul></div>
+  <div class="box"><h4>Fact: one row per referral</h4>
+  Keys to each dimension, <code>-1</code> if a lookup fails (checks expect zero).<br>Plus <code>obt_referral_wide</code>: everything pre-joined, <b>no PII</b>.</div></div>
+  <div class="box" style="margin-top:12px"><h4>C0130 after batch 1</h4>
+  <table><tr><th>client_sk</th><th>Area</th><th>Postal</th><th>From</th><th>To</th><th>Current</th></tr>
+  <tr class="row-in"><td>127</td><td>Toa Payoh</td><td>310870</td><td>1900-01-01</td><td>9999-12-31</td><td class="good">yes</td></tr></table>
+  Referrals R00051, R00140, R00297 → all point at <b>127</b>.</div>`,
+  say: "The grain is one row per referral. Surrogate keys let one client have several versions, and the fact points at exactly one.",
+},
+{
+  layer: "Batch 2 · landing → bronze", title: "Changes arrive",
+  active: ["landing","bronze"], flows: ["lb"], counts: { landing: "+2 files", bronze: "clients 247 · referrals 704" },
+  body: `<table><tr><th>In the file</th><th>Count</th><th>Expected behaviour</th></tr>
+  <tr class="row-in"><td>Clients who moved (incl. <b>C0130</b>)</td><td>30</td><td>new SCD2 version</td></tr>
+  <tr class="row-in" style="animation-delay:.07s"><td>Clients with a new phone only</td><td>5</td><td>overwrite, no new version</td></tr>
+  <tr class="row-in" style="animation-delay:.14s"><td>Re-sent unchanged (C0001, C0002)</td><td>2</td><td>nothing</td></tr>
+  <tr class="row-in" style="animation-delay:.21s"><td>New clients (C0201 has <code>Single parent</code>)</td><td>10</td><td>insert; C0201 is a WARN</td></tr>
+  <tr class="row-in" style="animation-delay:.28s"><td>New referrals</td><td>300</td><td>insert</td></tr>
+  <tr class="row-in" style="animation-delay:.35s"><td>Re-sent from batch 1 / twice in one file</td><td>3 / 1</td><td>nothing / keep one</td></tr>
+  <tr class="row-in" style="animation-delay:.42s"><td>Orphans (C9001, C9002), bad date, cascades</td><td>5</td><td>quarantine</td></tr></table>`,
+  say: "A typical change file: some clients moved, some changed only contact details, some were re-sent with no change, plus new records and some bad ones. Each case is there to prove a rule.",
+},
+{
+  layer: "Batch 2 · 21 / 22 silver", title: "Only real changes are written",
+  active: ["bronze","silver","quarantine"], flows: ["bs","sq"], counts: { bronze: "247 · 704", silver: "207 · 687", quarantine: "16 OPEN" },
+  body: `<div class="grid2"><div class="box"><h4>Clients</h4>
+  <table><tr><td>inserted</td><td class="good">10</td></tr><tr><td>updated</td><td>35 <span style="color:var(--muted)">(30 moves + 5 phones)</span></td></tr>
+  <tr><td>unchanged</td><td>162 <span style="color:var(--muted)">(incl. C0001, C0002)</span></td></tr><tr><td>WARN</td><td class="warnc">1 (C0201 kept)</td></tr></table></div>
+  <div class="box"><h4>Referrals</h4>
+  <table><tr><td>inserted</td><td class="good">295</td></tr><tr><td>updated</td><td>0 <span style="color:var(--muted)">(re-sends ignored)</span></td></tr>
+  <tr><td>quarantined</td><td class="bad">5</td></tr></table>
+  R00441, R00442 orphans · R00521 date · R00609, R00647 cascade</div></div>
+  <p><code>row_hash</code> is a fingerprint of the plain values. Encryption output changes every time, so the MERGE compares fingerprints and only writes when something really changed.</p>`,
+  say: "The MERGE only updates a row when its fingerprint changes, so re-sent records and duplicates do nothing, and gold never sees fake history.",
+},
+{
+  layer: "Batch 2 · 30_gold_dimensions", title: "SCD Type 2: C0130 moves",
+  active: ["silver","gold"], flows: ["sg"], counts: { gold: "dim_client 237 (207 current)" },
+  body: `<table><tr><th>client_sk</th><th>Area</th><th>Postal</th><th>From</th><th>To</th><th>Current</th></tr>
+  <tr class="row-in"><td>127</td><td>Toa Payoh</td><td>310870</td><td>1900-01-01</td><td><b class="warnc">2026-07-01</b></td><td><span class="closed">yes</span> → no</td></tr>
+  <tr class="row-in" style="animation-delay:.6s"><td><b>new</b></td><td class="good">Jurong West</td><td class="good">640870</td><td><b class="good">2026-07-01</b></td><td>9999-12-31</td><td class="good">yes</td></tr></table>
+  <div class="grid2"><div class="box"><h4>Two fingerprints</h4>
+  <code>scd_hash</code> (area, household, postal) differs → <b>new version</b><br>only <code>row_hash</code> differs → <b>overwrite</b> (phone change)</div>
+  <div class="box"><h4>One MERGE</h4>Changed clients appear twice in the source: once to close the old row, once with a NULL key so the new version is inserted. One transaction: never zero or two current rows.</div></div>
+  <p>This batch: <b>30</b> new versions, <b>5</b> Type 1 overwrites, <b>10</b> new clients.</p>`,
+  say: "Circumstances are history the business cares about. Contact details aren't, so they're overwritten inside the same dimension.",
+},
+{
+  layer: "Batch 2 · 31_gold_facts", title: "Point-in-time join",
+  active: ["gold"], flows: [], counts: { gold: "fact 687" },
+  body: `<p>Each referral joins the client version valid <b>on the referral date</b>: <code>date ≥ effective_from AND date &lt; effective_to</code>.</p>
+  <table><tr><th>Referral</th><th>Date</th><th>Version</th><th>Area at the time</th></tr>
+  <tr class="row-in"><td>R00051</td><td>2026-02-10</td><td>127</td><td>Toa Payoh</td></tr>
+  <tr class="row-in" style="animation-delay:.1s"><td>R00140</td><td>2026-03-22</td><td>127</td><td>Toa Payoh</td></tr>
+  <tr class="row-in" style="animation-delay:.2s"><td>R00297</td><td>2026-05-18</td><td>127</td><td>Toa Payoh</td></tr>
+  <tr class="row-in" style="animation-delay:.4s"><td>R00411</td><td>2026-08-01</td><td>new</td><td class="good">Jurong West</td></tr>
+  <tr class="row-in" style="animation-delay:.5s"><td>R00585</td><td>2026-09-20</td><td>new</td><td class="good">Jurong West</td></tr></table>
+  <p>Without SCD2, all five would count for Jurong West, and Toa Payoh's numbers would be wrong.</p>`,
+  say: "This is why SCD2 exists: facts get the version that was true at the time, including where the client lived.",
+},
+{
+  layer: "Batch 3 · 40_remediation", title: "Corrections replay through bronze",
+  active: ["landing","bronze","quarantine"], flows: ["lb","qb"], counts: { landing: "corrections 8", bronze: "+2 clients · +6 referrals", quarantine: "8 REPLAYED" },
+  body: `<table><tr><th>Key</th><th>Column</th><th>Original</th><th></th><th>Corrected</th></tr>
+  <tr class="row-in"><td><b>C0025</b></td><td>postal_code</td><td class="bad">12345</td><td class="arrow">→</td><td class="good">382038</td></tr>
+  <tr class="row-in" style="animation-delay:.08s"><td>C0060</td><td>postal_code</td><td class="bad">ABC123</td><td class="arrow">→</td><td class="good">658175</td></tr>
+  <tr class="row-in" style="animation-delay:.16s"><td>R00020, R00089, R00151, R00521</td><td>referral_date</td><td class="bad">bad formats / 2027</td><td class="arrow">→</td><td class="good">yyyy-MM-dd</td></tr>
+  <tr class="row-in" style="animation-delay:.24s"><td>R00441, R00442</td><td>client_id</td><td class="bad">C9001, C9002</td><td class="arrow">→</td><td class="good">C0050, C0051</td></tr></table>
+  <p>The original rejected row is rebuilt with the fix and <b>appended to bronze</b>, tagged <code>remediation: …</code>. Status: ${S("pill p-open","OPEN")} → ${S("pill p-rep","REPLAYED")}</p>`,
+  say: "Corrections go back in through the same door as any other data, so they're checked by the same rules. Nothing is edited by hand, and the bad row and its fix sit side by side in bronze for audit.",
+},
+{
+  layer: "Batch 3 · 21 / 22 silver", title: "Re-check and release",
+  active: ["bronze","silver","quarantine"], flows: ["bs"], counts: { silver: "209 · 697", quarantine: "12 RESOLVED · 4 OPEN" },
+  body: `<table><tr><th>Outcome</th><th>Rows</th><th>Examples</th></tr>
+  <tr class="row-in"><td>${S("pill p-res","RESOLVED")} corrected</td><td>8</td><td>C0025, C0060, R00020, R00441 …</td></tr>
+  <tr class="row-in" style="animation-delay:.15s"><td>${S("pill p-res","RESOLVED")} released with client</td><td>4</td><td><b>R00087</b>, R00273, R00387, R00647, with no correction of their own</td></tr>
+  <tr class="row-in" style="animation-delay:.3s"><td>${S("pill p-open","OPEN")} needs source fix</td><td>4</td><td>empty client id, empty referral id, R00335, R00609</td></tr></table>
+  <div class="box"><h4>DQ failures by batch</h4>
+  <table><tr><th>Rule</th><th>batch 1</th><th>batch 2</th><th>batch 3</th></tr>
+  <tr><td>CLI_002 postal</td><td>2</td><td>2</td><td class="good">0</td></tr>
+  <tr><td>REF_002 date</td><td>3</td><td>4</td><td class="good">0</td></tr>
+  <tr><td>REF_003 client</td><td>4</td><td>8</td><td class="warnc">2</td></tr></table></div>`,
+  say: "Fixing a client releases the referrals blocked by it. The four left have no usable key, so they need a fix in the source system, and they stay visible instead of being dropped.",
+},
+{
+  layer: "Governance · 50_governance", title: "Column masks: who sees what",
+  active: ["gold"], flows: [], counts: { gold: "dim_client masked" },
+  body: `<div class="grid2"><div class="box"><h4>Analyst</h4>
+  <table><tr><td>full_name</td><td><code>T***</code></td></tr><tr><td>nric_masked</td><td><code>FAKE-***1823</code></td></tr>
+  <tr><td>phone_enc</td><td><code>[hidden]</code></td></tr><tr><td>postal_code</td><td><code>64****</code></td></tr><tr><td>planning_area</td><td>Jurong West</td></tr></table></div>
+  <div class="box"><h4>pii_readers</h4>
+  <table><tr><td>full_name</td><td>Test Client 0130</td></tr><tr><td>nric_masked</td><td><code>FAKE-***1823</code></td></tr>
+  <tr><td>phone_enc</td><td>(ciphertext)</td></tr><tr><td>postal_code</td><td>640870</td></tr><tr><td>planning_area</td><td>Jurong West</td></tr></table></div></div>
+  <p>Same query, different result depending on who asks. The rule is attached to the column, so no view can bypass it.
+  <code>obt_referral_wide</code> needs no mask: it never got any personal data.</p>`,
+  say: "Encryption protects the stored data. Masks control what each person sees when they query it. The safest PII is the PII you never copy.",
+},
+{
+  layer: "Orchestration · msf_pipeline", title: "One Job runs it all",
+  active: ["landing","bronze","silver","gold","quarantine","ops"], flows: ["lb","bs","sg","sq","os"], counts: { gold: "dim_client 239 · fact 697" },
+  body: `<p><code>bronze</code> → (<code>reference</code> ∥ <code>remediation</code> → <code>clients</code>) → <code>referrals</code> → <code>dimensions</code> → <code>facts</code> → <code>governance</code></p>
+  <ul><li><code>batch_label</code> is a job parameter, passed to every notebook</li><li>Retry on bronze (Auto Loader restarts once on a new column)</li>
+  <li>Setup is excluded: it can reset the platform</li><li><b>Repair run</b> re-runs only failed tasks and what follows</li></ul>
+  <p>First run with no new files: <span class="good">0 rows changed everywhere</span>, and it caught up a <code>dim_client</code> step I had skipped by hand
+  (4 referrals with <code>-1</code> client keys → 0).</p>`,
+  say: "Dependencies are explicit, independent steps run in parallel, and a failure stops everything downstream. In production: Asset Bundles, CI/CD, and alerts on failed runs and DQ spikes.",
+},
+{
+  layer: "Wrap-up", title: "What this is: a lakehouse",
+  active: ["landing","bronze","silver","gold","ops","quarantine"], flows: [], counts: {},
+  body: `<table><tr><th></th><th>What it is</th></tr>
+  <tr><td>Data lake</td><td>cheap files, no transactions</td></tr>
+  <tr><td>Warehouse</td><td>reliable SQL, closed and costly, weak for ML</td></tr>
+  <tr><td><b>Lakehouse</b></td><td><b>Delta</b> (ACID, MERGE, time travel) + <b>Unity Catalog</b> (governance, masks) on open files. One copy for BI and ML.</td></tr>
+  <tr><td>Data mesh</td><td>an organisational model: domain ownership, data as a product, self-serve platform, federated governance</td></tr></table>
+  <p><b>Lessons from real problems:</b> Excel CSVs break ingestion · <code>Changi- Total</code> · census rounding · my own synthetic data needed fixing · mislabelled batches · a skipped step caught by <code>-1</code> keys.</p>`,
+  say: "This pipeline is the template a central platform team could offer each domain: landing, medallion layers, run log, rules as data, quarantine and remediation.",
+},
+];
+
+// ---------- render ----------
+let i = 0;
+const progress = document.getElementById("progress");
+STEPS.forEach((_, k) => { const s = document.createElement("span"); s.title = STEPS[k].title; s.onclick = () => go(k); progress.appendChild(s); });
+
+function render() {
+  const st = STEPS[i];
+  for (const [id, n] of Object.entries(NODES)) {
+    const g = document.getElementById("node-" + id), on = st.active.includes(id);
+    g.classList.toggle("active", on);
+    g.querySelector("rect").style.stroke = on ? css(n.color) : "";
+    document.getElementById("count-" + id).textContent = st.counts[id] || "";
+  }
+  const packets = document.getElementById("packets"), labels = document.getElementById("labels");
+  packets.innerHTML = ""; labels.innerHTML = "";
+  for (const id of Object.keys(FLOWS)) document.getElementById("base-" + id).style.stroke = "";
+  const flowColor = { lb: "--bronze", bs: "--silver", sg: "--gold", sq: "--quar", qb: "--warn", os: "--ops" };
+  const flowText = { lb: "Auto Loader", bs: "clean · check", sg: "MERGE", sq: "rejected", qb: "replay fix", os: "rules" };
+  st.flows.forEach(id => {
+    const f = FLOWS[id], color = css(flowColor[id]);
+    el("path", { d: f.d, class: "flow-on", stroke: color, id: "on-" + id }, packets);
+    for (let k = 0; k < 3; k++) {
+      const c = el("circle", { r: 5, fill: color }, packets);
+      const a = el("animateMotion", { dur: "1.8s", repeatCount: "indefinite", begin: `-${k * 0.6}s`, path: f.d }, c);
+    }
+    const t = el("text", { x: f.lx, y: f.ly, class: "flow-label" }, labels); t.textContent = flowText[id];
+  });
+  document.getElementById("card").innerHTML =
+    `<div class="layer">${st.layer}</div><h2>${st.title}</h2><div class="body">${st.body}</div>
+     <div class="say"><b>Say:</b> “${st.say}”</div>`;
+  [...progress.children].forEach((s, k) => { s.className = k < i ? "done" : k === i ? "now" : ""; });
+  document.getElementById("counter").textContent = `${i + 1} / ${STEPS.length}`;
+  document.getElementById("prev").disabled = i === 0;
+  document.getElementById("next").disabled = i === STEPS.length - 1;
+  history.replaceState(null, "", "#" + (i + 1));
+}
+function go(k) { i = Math.max(0, Math.min(STEPS.length - 1, k)); render(); window.scrollTo({ top: 0, behavior: "smooth" }); }
+document.getElementById("prev").onclick = () => go(i - 1);
+document.getElementById("next").onclick = () => go(i + 1);
+document.addEventListener("keydown", e => { if (e.key === "ArrowRight") go(i + 1); if (e.key === "ArrowLeft") go(i - 1); });
+
+window.addEventListener("hashchange", () => {
+  const n = parseInt(location.hash.slice(1), 10);
+  if (Number.isFinite(n) && n - 1 !== i) go(n - 1);
+});
+drawBase();
+const start = parseInt(location.hash.slice(1), 10);
+go(Number.isFinite(start) ? start - 1 : 0);
+</script>
+</body>
+</html>
